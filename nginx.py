@@ -13,6 +13,10 @@ INDENT = '    '
 DEBUG=False
 
 log = logging.getLogger(__name__)
+consolehandler=logging.StreamHandler()
+formatter = logging.Formatter('%(levelname)s:%(lineno)d - %(message)s')
+consolehandler.setFormatter(formatter)
+log.addHandler(consolehandler)
 log.setLevel(logging.DEBUG if DEBUG else logging.INFO)
 
 class Error(Exception):
@@ -221,6 +225,8 @@ class Container(object):
         for x in self.children:
             if isinstance(x, Key):
                 ret.append(INDENT + x.as_strings)
+            elif isinstance(x, LuaBlock):
+                ret.append(x.as_strings)
             elif isinstance(x, Comment):
                 if x.inline and len(ret) >= 1:
                     ret[-1] = ret[-1].rstrip('\n') + '  ' + x.as_strings
@@ -336,6 +342,46 @@ class If(Container):
         self.name = 'if'
 
 
+class LuaBlock(Container):
+    def __init__(self, name, value=None, *args):
+        """Initialize."""
+        super(LuaBlock, self).__init__(value, *args)
+        self.name = name
+        self.value = value
+
+    @property
+    def as_list(self):
+        """Return value as nested list of strings."""
+        return self.value
+
+    @property
+    def as_dict(self):
+        """Return value as dict."""
+        return {self.name: self.value}
+    
+    def add(self, args):
+        """
+        Add lua code to the LuaBlock.
+
+        :param *args: lua code string to add to the LuaBlock.
+        :returns: full list of LuaBlock
+        """
+        self.value = args
+
+    @property
+    def as_strings(self):
+        """Return value as nginx config string."""
+        ret = []
+        container_title = (INDENT * (self._depth - 1))
+        container_title += '{0} {{\n'.format(self.name)
+        ret.append(container_title)
+        for x in self.value:
+            ret.append((INDENT * (self._depth + 1)) + x + '\n')
+        ret[-1] = re.sub('}\n+$', '}\n', ret[-1])
+        ret.append((INDENT * self._depth) + '}\n\n')
+        return ''.join(ret)
+
+
 class Upstream(Container):
     """Container for upstream configuration (reverse proxy)."""
 
@@ -408,6 +454,9 @@ class Key(object):
         return '{0} {1};\n'.format(self.name, self.value)
 
 
+import pysnooper
+
+# @pysnooper.snoop()
 def loads(data, conf=True):
     """
     Load an nginx configuration from a provided string.
@@ -519,6 +568,44 @@ def loads(data, conf=True):
                 f.add(c) if conf else f.append(c)
             index += m.end() - 1
             continue
+
+        m = re.compile(r'^\s*^\s*([a-z_]*_by_lua_block)\s*([^;]*?)\s*{').search(data[index:])
+        if m:
+            log.debug("Open (%s)", m.group(1))
+            lua = LuaBlock(m.group(1))
+            lopen.insert(0, lua)
+            index += m.end()
+
+        # match *_by_lua_block {} lua code
+        if lopen and isinstance(lopen[0], LuaBlock):
+            lua_content = []
+            while True:
+                m = re.compile(r'^\s*(\S.+)\n').search(data[index:])
+                if m:
+                    log.debug(m.group(0).strip())
+                    lua_content.append(m.group(0).strip())
+                    index += m.end()
+                    m = re.compile(r'^\s+}').search(data[index:])
+                    if m:
+                        c = lopen[0]
+                        lopen.pop(0)
+                        c.add(lua_content)
+                        lopen[0].add(c)
+                        index += m.end()
+                        
+                        log.debug("Close ({0})".format(c.__class__.__name__))
+                        break
+                else:
+                    idx = index + 100 if len(data) > index + 100 else len(data)
+                    log.debug("match lua content error. content: %s" % data[index:idx])
+                    index += 1
+                    log.debug("-- index -- : %s" % index)
+                    raise Exception()
+                    
+                    break
+                
+            continue
+
 
         m = re.compile(r'^\s*}').search(data[index:])
         if m:

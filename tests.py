@@ -224,6 +224,43 @@ server{
 
 TESTBLOCK_CASE_14 = """user  nginx;"""
 
+TESTBLOCK_CASE_15 = """
+server {
+
+    include /etc/nginx/listen.conf;
+    server_name  www.example.com;
+    
+    location ~* {
+        index index.html;
+    }
+
+    location /abc {
+        header_filter_by_lua '
+            ngx.header["content-length"] = nil
+        ';
+        access_by_lua_block {
+            local regex = [[\\d+]]
+            local m = ngx.re.match("hello, 1234", regex)
+            if m then ngx.say(m[0]) else ngx.say("not matched!") end
+        }
+    }
+
+    location /test {
+       content_by_lua '
+           local memcached = require "resty.memcached"
+           local memc, err = memcached:new()
+           if not memc then
+               ngx.say("failed to instantiate memc: ", err)
+               return
+           end
+       ';
+    }
+    
+    server_rewrite_by_lua_block {
+        ngx.log(ngx.INFO, "is_subrequest:", ngx.is_subrequest)
+    }
+}
+"""
 
 class TestPythonNginx(unittest.TestCase):
     def test_basic_load(self):
@@ -353,6 +390,9 @@ class TestPythonNginx(unittest.TestCase):
     def test_server_without_last_linebreak(self):
         self.assertTrue(nginx.loads(TESTBLOCK_CASE_13) is not None)
         self.assertTrue(nginx.loads(TESTBLOCK_CASE_14) is not None)
+
+    def test_lua_block(self):
+        self.assertTrue(nginx.loads(TESTBLOCK_CASE_15) is not None)
 
 
 if __name__ == '__main__':
